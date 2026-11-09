@@ -1,3 +1,4 @@
+
 """Fast smoke checks: real model shapes, conditioning, and mask-restricted scoring.
 
 These are NOT a training-quality test or reproduction of the research paper.
