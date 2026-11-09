@@ -1,10 +1,28 @@
-# Python virtual environments (including nested method environments)
-**/.venv/
-results/
-
-# Python cache
+# Python
 __pycache__/
-*.pyc
+.pytest_cache/
+*.py[cod]
 
-# macOS
+# Virtual environments
+.venv/
+**/.venv/
+
+# Downloaded and prepared datasets
+data/
+
+# Trained models, predictions, experimental outputs
+results/
+checkpoints/
+runs/
+
+# Model checkpoint files
+*.pth
+*.pt
+*.ckpt
+
+# Local Windows installers and archives
+python-*.exe
+
+# Operating-system files
 .DS_Store
+Thumbs.db
