@@ -1,0 +1,7 @@
+# Install in the existing venv from the project root.
+# NumPy and Pandas are already provided by requirements-preprocessing.txt.
+torch
+tqdm
+PyYAML
+# Optional: only if you set diffusion.is_linear: true
+# linear_attention_transformer

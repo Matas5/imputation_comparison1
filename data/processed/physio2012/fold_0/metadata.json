@@ -1,0 +1,61 @@
+{
+  "dataset": "PhysioNet Challenge 2012 - Set A",
+  "n_patients": 4000,
+  "shape_per_patient": [
+    48,
+    35
+  ],
+  "features": [
+    "DiasABP",
+    "HR",
+    "Na",
+    "Lactate",
+    "NIDiasABP",
+    "PaO2",
+    "WBC",
+    "pH",
+    "Albumin",
+    "ALT",
+    "Glucose",
+    "SaO2",
+    "Temp",
+    "AST",
+    "Bilirubin",
+    "HCO3",
+    "BUN",
+    "RespRate",
+    "Mg",
+    "HCT",
+    "SysABP",
+    "FiO2",
+    "K",
+    "GCS",
+    "Cholesterol",
+    "NISysABP",
+    "TroponinT",
+    "MAP",
+    "TroponinI",
+    "PaCO2",
+    "Platelets",
+    "Urine",
+    "NIMAP",
+    "Creatinine",
+    "ALP"
+  ],
+  "fold": 0,
+  "seed": 1,
+  "missing_ratios": [
+    0.1
+  ],
+  "normalization": "Z-score, ddof=0, training observed measurements only",
+  "split": "Original CSDI 70/10/20 shuffled patient-level scheme",
+  "missingness": "Per-patient fixed-count MCAR-style masking of observed entries",
+  "training_mask": "Unmodified; CSDI generates its own inside the model",
+  "outcome_changing_notes": [
+    "Training-only statistics replace original all-patient normalization",
+    "For zero-variance training features, use std=1 instead of dividing by zero",
+    "Malformed patients raise errors instead of being silently skipped",
+    "NaNs preserved in parsed.npz; standardized missing locations get zero placeholders",
+    "Normalized values saved as float32 (matching CSDI's model input dtype)"
+  ]
+}

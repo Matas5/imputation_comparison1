@@ -1,4 +1,10 @@
+# Python virtual environments (including nested method environments)
+**/.venv/
+results/
+
+# Python cache
 __pycache__/
-.pytest_cache/
-*.py[cod]
-data/
+*.pyc
+
+# macOS
+.DS_Store
