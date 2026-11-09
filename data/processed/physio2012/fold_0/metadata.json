@@ -45,7 +45,9 @@
   "fold": 0,
   "seed": 1,
   "missing_ratios": [
-    0.1
+    0.1,
+    0.5,
+    0.9
   ],
   "normalization": "Z-score, ddof=0, training observed measurements only",
   "split": "Original CSDI 70/10/20 shuffled patient-level scheme",
