@@ -1,18 +1,18 @@
 
 """CSDI diffusion model for PhysioNet 2012.
 
-Adapted from https://github.com/Matas5/CSDI/blob/main/main_model.py
-MIT copyright 2021 Yusuke Tashiro; see LICENSE-CSDI.
+Based on the MIT-licensed CSDI implementation by Yusuke Tashiro et al.
+See methods/CSDI/LICENSE-CSDI in the project.
 
-ALGORITHM UNCHANGED: training-mask sampling, noise schedule, diffusion loss,
-reverse diffusion, and the PhysioNet batch transformation match the original.
-ONLY integration changes: relative module import; PM2.5/forecasting subclasses
-are omitted because this project initially targets PhysioNet 2012.
+The network, loss, training masks and reverse-diffusion equations are unchanged.
+Inference may now process several independent samples per patient at once.
 """
+
 import numpy as np
 import torch
 import torch.nn as nn
-from .diff_models import diff_CSDI  # CHANGE: package-relative import only
+
+from .diff_models import diff_CSDI
 
 
 class CSDI_base(nn.Module):
@@ -24,18 +24,21 @@ class CSDI_base(nn.Module):
         self.emb_feature_dim = config["model"]["featureemb"]
         self.is_unconditional = config["model"]["is_unconditional"]
         self.target_strategy = config["model"]["target_strategy"]
-        self.emb_total_dim = self.emb_time_dim + self.emb_feature_dim
-        if self.is_unconditional == False:
-            self.emb_total_dim += 1
-        self.embed_layer = nn.Embedding(
-            num_embeddings=self.target_dim, embedding_dim=self.emb_feature_dim
-        )
 
+        self.emb_total_dim = self.emb_time_dim + self.emb_feature_dim
+        if not self.is_unconditional:
+            self.emb_total_dim += 1
+
+        self.embed_layer = nn.Embedding(
+            num_embeddings=target_dim,
+            embedding_dim=self.emb_feature_dim,
+        )
         config_diff = config["diffusion"]
         config_diff["side_dim"] = self.emb_total_dim
-        input_dim = 1 if self.is_unconditional == True else 2
+        input_dim = 1 if self.is_unconditional else 2
         self.diffmodel = diff_CSDI(config_diff, input_dim)
         self.num_steps = config_diff["num_steps"]
+
         if config_diff["schedule"] == "quad":
             self.beta = np.linspace(
                 config_diff["beta_start"] ** 0.5,
@@ -48,6 +51,9 @@ class CSDI_base(nn.Module):
                 config_diff["beta_end"],
                 self.num_steps,
             )
+        else:
+            raise ValueError(f"Unknown diffusion schedule: {config_diff['schedule']}")
+
         self.alpha_hat = 1 - self.beta
         self.alpha = np.cumprod(self.alpha_hat)
         self.alpha_torch = (
@@ -68,12 +74,11 @@ class CSDI_base(nn.Module):
         rand_for_mask = torch.rand_like(observed_mask) * observed_mask
         rand_for_mask = rand_for_mask.reshape(len(rand_for_mask), -1)
         for i in range(len(observed_mask)):
-            sample_ratio = np.random.rand()  # original: random training missingness per sample
+            sample_ratio = np.random.rand()
             num_observed = observed_mask[i].sum().item()
             num_masked = round(num_observed * sample_ratio)
             rand_for_mask[i][rand_for_mask[i].topk(num_masked).indices] = -1
-        cond_mask = (rand_for_mask > 0).reshape(observed_mask.shape).float()
-        return cond_mask
+        return (rand_for_mask > 0).reshape(observed_mask.shape).float()
 
     def get_hist_mask(self, observed_mask, for_pattern_mask=None):
         if for_pattern_mask is None:
@@ -100,21 +105,35 @@ class CSDI_base(nn.Module):
         feature_embed = feature_embed.unsqueeze(0).unsqueeze(0).expand(B, L, -1, -1)
         side_info = torch.cat([time_embed, feature_embed], dim=-1)
         side_info = side_info.permute(0, 3, 2, 1)
-        if self.is_unconditional == False:
-            side_mask = cond_mask.unsqueeze(1)
-            side_info = torch.cat([side_info, side_mask], dim=1)
+        if not self.is_unconditional:
+            side_info = torch.cat([side_info, cond_mask.unsqueeze(1)], dim=1)
         return side_info
 
-    def calc_loss_valid(self, observed_data, cond_mask, observed_mask, side_info, is_train):
+    def calc_loss_valid(
+        self, observed_data, cond_mask, observed_mask, side_info, is_train
+    ):
         loss_sum = 0
         for t in range(self.num_steps):
             loss = self.calc_loss(
-                observed_data, cond_mask, observed_mask, side_info, is_train, set_t=t
+                observed_data,
+                cond_mask,
+                observed_mask,
+                side_info,
+                is_train,
+                set_t=t,
             )
             loss_sum += loss.detach()
         return loss_sum / self.num_steps
 
-    def calc_loss(self, observed_data, cond_mask, observed_mask, side_info, is_train, set_t=-1):
+    def calc_loss(
+        self,
+        observed_data,
+        cond_mask,
+        observed_mask,
+        side_info,
+        is_train,
+        set_t=-1,
+    ):
         B, K, L = observed_data.shape
         if is_train != 1:
             t = (torch.ones(B) * set_t).long().to(self.device)
@@ -122,8 +141,13 @@ class CSDI_base(nn.Module):
             t = torch.randint(0, self.num_steps, [B]).to(self.device)
         current_alpha = self.alpha_torch[t]
         noise = torch.randn_like(observed_data)
-        noisy_data = (current_alpha ** 0.5) * observed_data + (1.0 - current_alpha) ** 0.5 * noise
-        total_input = self.set_input_to_diffmodel(noisy_data, observed_data, cond_mask)
+        noisy_data = (
+            (current_alpha ** 0.5) * observed_data
+            + (1.0 - current_alpha) ** 0.5 * noise
+        )
+        total_input = self.set_input_to_diffmodel(
+            noisy_data, observed_data, cond_mask
+        )
         predicted = self.diffmodel(total_input, side_info, t)
         target_mask = observed_mask - cond_mask
         residual = (noise - predicted) * target_mask
@@ -132,66 +156,135 @@ class CSDI_base(nn.Module):
         return loss
 
     def set_input_to_diffmodel(self, noisy_data, observed_data, cond_mask):
-        if self.is_unconditional == True:
-            total_input = noisy_data.unsqueeze(1)
-        else:
-            cond_obs = (cond_mask * observed_data).unsqueeze(1)
-            noisy_target = ((1 - cond_mask) * noisy_data).unsqueeze(1)
-            total_input = torch.cat([cond_obs, noisy_target], dim=1)
-        return total_input
+        if self.is_unconditional:
+            return noisy_data.unsqueeze(1)
+        cond_obs = (cond_mask * observed_data).unsqueeze(1)
+        noisy_target = ((1 - cond_mask) * noisy_data).unsqueeze(1)
+        return torch.cat([cond_obs, noisy_target], dim=1)
 
-    def impute(self, observed_data, cond_mask, side_info, n_samples):
+    @torch.no_grad()
+    def impute(
+        self,
+        observed_data,
+        cond_mask,
+        side_info,
+        n_samples,
+        sample_chunk_size=1,
+    ):
+        """Generate n_samples per patient in GPU batches of sample_chunk_size.
+
+        Output has shape (B, n_samples, K, L), exactly as before.
+        Chunk size 1 follows the original sequential sampling procedure.
+        """
+        if n_samples < 1 or sample_chunk_size < 1:
+            raise ValueError("n_samples and sample_chunk_size must be positive")
+
         B, K, L = observed_data.shape
-        imputed_samples = torch.zeros(B, n_samples, K, L).to(self.device)
-        for i in range(n_samples):
-            if self.is_unconditional == True:
-                noisy_obs = observed_data
+        imputed_samples = observed_data.new_empty((B, n_samples, K, L))
+
+        for start in range(0, n_samples, sample_chunk_size):
+            count = min(sample_chunk_size, n_samples - start)
+
+            # Each of the B patients has 'count' independent trajectories.
+            # (B, K, L) -> (B * count, K, L)
+            data = observed_data.repeat_interleave(count, dim=0)
+            mask = cond_mask.repeat_interleave(count, dim=0)
+            side = side_info.repeat_interleave(count, dim=0)
+
+            if self.is_unconditional:
+                noisy_obs = data
                 noisy_cond_history = []
                 for t in range(self.num_steps):
                     noise = torch.randn_like(noisy_obs)
-                    noisy_obs = (self.alpha_hat[t] ** 0.5) * noisy_obs + self.beta[t] ** 0.5 * noise
-                    noisy_cond_history.append(noisy_obs * cond_mask)
-            current_sample = torch.randn_like(observed_data)
+                    noisy_obs = (
+                        self.alpha_hat[t] ** 0.5 * noisy_obs
+                        + self.beta[t] ** 0.5 * noise
+                    )
+                    noisy_cond_history.append(noisy_obs * mask)
+            else:
+                # Same conditioning throughout all diffusion steps.
+                cond_obs = (mask * data).unsqueeze(1)
+
+            current_sample = torch.randn_like(data)
+
+            # Steps within each trajectory remain sequential, but all
+            # B * count trajectories take each step in parallel.
             for t in range(self.num_steps - 1, -1, -1):
-                if self.is_unconditional == True:
-                    diff_input = cond_mask * noisy_cond_history[t] + (1.0 - cond_mask) * current_sample
-                    diff_input = diff_input.unsqueeze(1)
+                if self.is_unconditional:
+                    diff_input = (
+                        mask * noisy_cond_history[t]
+                        + (1.0 - mask) * current_sample
+                    ).unsqueeze(1)
                 else:
-                    cond_obs = (cond_mask * observed_data).unsqueeze(1)
-                    noisy_target = ((1 - cond_mask) * current_sample).unsqueeze(1)
+                    noisy_target = ((1.0 - mask) * current_sample).unsqueeze(1)
                     diff_input = torch.cat([cond_obs, noisy_target], dim=1)
-                predicted = self.diffmodel(diff_input, side_info, torch.tensor([t]).to(self.device))
+
+                predicted = self.diffmodel(
+                    diff_input, side, torch.tensor([t], device=self.device)
+                )
                 coeff1 = 1 / self.alpha_hat[t] ** 0.5
                 coeff2 = (1 - self.alpha_hat[t]) / (1 - self.alpha[t]) ** 0.5
                 current_sample = coeff1 * (current_sample - coeff2 * predicted)
+
                 if t > 0:
                     noise = torch.randn_like(current_sample)
                     sigma = (
-                        (1.0 - self.alpha[t - 1]) / (1.0 - self.alpha[t]) * self.beta[t]
+                        (1.0 - self.alpha[t - 1])
+                        / (1.0 - self.alpha[t])
+                        * self.beta[t]
                     ) ** 0.5
                     current_sample += sigma * noise
-            imputed_samples[:, i] = current_sample.detach()
+
+            # (B * count, K, L) -> (B, count, K, L)
+            imputed_samples[:, start:start + count] = current_sample.reshape(
+                B, count, K, L
+            )
+
         return imputed_samples
 
     def forward(self, batch, is_train=1):
-        observed_data, observed_mask, observed_tp, gt_mask, for_pattern_mask, _ = self.process_data(batch)
+        (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            for_pattern_mask,
+            _,
+        ) = self.process_data(batch)
         if is_train == 0:
             cond_mask = gt_mask
         elif self.target_strategy != "random":
-            cond_mask = self.get_hist_mask(observed_mask, for_pattern_mask=for_pattern_mask)
+            cond_mask = self.get_hist_mask(
+                observed_mask, for_pattern_mask=for_pattern_mask
+            )
         else:
             cond_mask = self.get_randmask(observed_mask)
         side_info = self.get_side_info(observed_tp, cond_mask)
         loss_func = self.calc_loss if is_train == 1 else self.calc_loss_valid
-        return loss_func(observed_data, cond_mask, observed_mask, side_info, is_train)
+        return loss_func(
+            observed_data, cond_mask, observed_mask, side_info, is_train
+        )
 
-    def evaluate(self, batch, n_samples):
-        observed_data, observed_mask, observed_tp, gt_mask, _, cut_length = self.process_data(batch)
+    def evaluate(self, batch, n_samples, sample_chunk_size=1):
+        (
+            observed_data,
+            observed_mask,
+            observed_tp,
+            gt_mask,
+            _,
+            cut_length,
+        ) = self.process_data(batch)
         with torch.no_grad():
             cond_mask = gt_mask
             target_mask = observed_mask - cond_mask
             side_info = self.get_side_info(observed_tp, cond_mask)
-            samples = self.impute(observed_data, cond_mask, side_info, n_samples)
+            samples = self.impute(
+                observed_data,
+                cond_mask,
+                side_info,
+                n_samples,
+                sample_chunk_size=sample_chunk_size,
+            )
             for i in range(len(cut_length)):
                 target_mask[i, ..., 0 : cut_length[i].item()] = 0
         return samples, observed_data, target_mask, observed_mask, observed_tp
@@ -199,7 +292,7 @@ class CSDI_base(nn.Module):
 
 class CSDI_Physio(CSDI_base):
     def __init__(self, config, device, target_dim=35):
-        super(CSDI_Physio, self).__init__(target_dim, config, device)
+        super().__init__(target_dim, config, device)
 
     def process_data(self, batch):
         observed_data = batch["observed_data"].to(self.device).float()
